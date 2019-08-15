@@ -290,7 +290,7 @@ func groupThree(v *vcfgo.Variant) bool {
 	}
 
 	var xr bool
-	xrecI, _ := v.Info().Get("recessive")
+	xrecI, _ := v.Info().Get("x_recessive")
 	_, ok = xrecI.(string)
 	if !ok {
 		xr = false
