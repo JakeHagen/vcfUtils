@@ -108,6 +108,8 @@ func (m *manipInfo) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}
 			variant.Info().Set(m.prefix+"_"+m.operator, outVal)
 			variant.Info().Set(m.prefix+"_"+m.operator+"_name", outName)
 			wrt.WriteVariant(variant)
+		} else {
+			wrt.WriteVariant(variant)
 		}
 	}
 	return subcommands.ExitSuccess
