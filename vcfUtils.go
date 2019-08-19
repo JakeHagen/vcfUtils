@@ -284,22 +284,22 @@ func groupThree(v *vcfgo.Variant) bool {
 		return false
 	}
 
-	var r bool
+	r := true
 	recI, _ := v.Info().Get("recessive")
 	_, ok = recI.(string)
 	if !ok {
 		r = false
 	}
 
-	var xr bool
+	xr := true
 	xrecI, _ := v.Info().Get("x_recessive")
 	_, ok = xrecI.(string)
 	if !ok {
 		xr = false
 	}
 
-	var ch bool
-	chI, _ := v.Info().Get("comp_het")
+	ch := true
+	chI, _ := v.Info().Get("slivar_comphet")
 	_, ok = chI.(string)
 	if !ok {
 		ch = false
