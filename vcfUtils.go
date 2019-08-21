@@ -180,7 +180,7 @@ func isConstrained(v *vcfgo.Variant) bool {
 }
 
 func getGnomAD(v *vcfgo.Variant) float64 {
-	gnomadAFI, _ := v.Info().Get("AF_popmax")
+	gnomadAFI, _ := v.Info().Get("eAF_popmax")
 	gnomadAF, ok := gnomadAFI.(float64)
 	if !ok {
 		gnomadGAFI, _ := v.Info().Get("gAF_popmax")
