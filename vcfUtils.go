@@ -181,16 +181,15 @@ func isConstrained(v *vcfgo.Variant) bool {
 
 func getGnomAD(v *vcfgo.Variant) float64 {
 	gnomadAFI, _ := v.Info().Get("eAF_popmax")
-	gnomadAF, ok := gnomadAFI.(float64)
+	AF, ok := gnomadAFI.(float64)
 	if !ok {
 		gnomadGAFI, _ := v.Info().Get("gAF_popmax")
-		gnomadGAF, ok := gnomadGAFI.(float64)
+		AF, ok = gnomadGAFI.(float64)
 		if !ok {
-			return 0.0
+			AF = 0.0
 		}
-		return gnomadGAF
 	}
-	return gnomadAF
+	return AF
 }
 
 func isRare(v *vcfgo.Variant) bool {
