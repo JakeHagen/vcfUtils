@@ -708,6 +708,7 @@ func main() {
 	subcommands.Register(&manipInfo{}, "")
 	subcommands.Register(&rank{}, "")
 	subcommands.Register(&anchor{}, "")
+	subcommands.Register(&ppsap{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
