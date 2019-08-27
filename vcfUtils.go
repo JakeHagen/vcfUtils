@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/brentp/faidx"
 	"github.com/brentp/vcfgo"
@@ -181,15 +184,16 @@ func isConstrained(v *vcfgo.Variant) bool {
 
 func getGnomAD(v *vcfgo.Variant) float64 {
 	gnomadAFI, _ := v.Info().Get("eAF_popmax")
-	AF, ok := gnomadAFI.(float64)
+	gnomadAF, ok := gnomadAFI.(float64)
 	if !ok {
 		gnomadGAFI, _ := v.Info().Get("gAF_popmax")
-		AF, ok = gnomadGAFI.(float64)
+		gnomadGAF, ok := gnomadGAFI.(float64)
 		if !ok {
-			AF = 0.0
+			return 0.0
 		}
+		return gnomadGAF
 	}
-	return AF
+	return gnomadAF
 }
 
 func isRare(v *vcfgo.Variant) bool {
@@ -350,6 +354,19 @@ func groupFive(v *vcfgo.Variant) bool {
 	return false
 }
 
+func groupFivePointFive(v *vcfgo.Variant) bool {
+	dnvI, _ := v.Info().Get("denovo")
+	_, ok := dnvI.(string)
+	if ok {
+		return true
+	}
+	return false
+}
+/*
+func groupSix(v *vcfgo.Variant) bool {
+
+}
+*/
 func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	riskGenes := f.Args()
 
@@ -398,6 +415,215 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 	}
 	return subcommands.ExitSuccess
 }
+
+type ppsap struct {
+	txt string
+	proband	string
+}
+
+func (*ppsap) Name() string { return "ppsap" }
+func (*ppsap) Synopsis() string {
+	return "parse psap output and add it to vcf"
+}
+func (*ppsap) Usage() string {
+	return `ppsap`
+}
+
+func (p *ppsap) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&p.txt, "txt", "", "txt file to extract psap values from")
+	f.StringVar(&p.txt, "proband", "", "proband name")
+}
+
+type popscores struct {
+	chet	*float64
+	dom	*float64
+	rec *float64
+}
+
+func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	file, err := os.Open(p.txt)
+	if err != nil {
+		panic(err)
+	}
+
+	defer file.Close()
+
+	var psapM map[string]*popscores
+
+	scanner := bufio.NewScanner(file)
+
+	// find proband column
+	var modelIdx int
+	var scoreIdx int
+	for idx, name := range strings.Split(scanner.Text(), "\t") {
+		switch name {
+		case "Dz.Model." + p.proband:
+			modelIdx = idx
+		case "popScore." + p.proband:
+			scoreIdx = idx
+		}
+	}
+	scanner.Scan()
+	for scanner.Scan() {
+		ls := strings.Split(scanner.Text(), "\t")
+		vID := ls[0] + "-" + ls[1] + "-" + ls[3] + "-" + ls[4]
+		pType := ls[modelIdx]
+		score := ls[scoreIdx]
+
+		if _, ok := psapM[vID]; ok {
+			switch pType {
+			case "DOM-het":
+				dom, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].dom = &dom
+			case "REC-hom":
+				rec, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].rec = &rec
+			case "REC-chet":
+				chet, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].chet = &chet
+			}
+		} else {
+			switch pType {
+			case "DOM-het":
+				dom, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID] = &popscores{dom: &dom}
+			case "REC-hom":
+				rec, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID] = &popscores{rec: &rec}
+			case "REC-chet":
+				chet, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID] = &popscores{chet: &chet}
+			}
+		}
+	}
+
+	rdr, err := vcfgo.NewReader(os.Stdin, false)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+	rdr.AddInfoToHeader("pdom", "1", "Float", "psap dominate score")
+	rdr.AddInfoToHeader("prec", "1", "Float", "psap recessive score")
+	rdr.AddInfoToHeader("pchet", "1", "Float", "psap compound het score")
+
+	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+	for {
+		variant := rdr.Read()
+		if variant == nil {
+			break
+		}
+
+		vID := variant.Chromosome + "-" + strconv.Itoa(int(variant.Pos)) + "-" + variant.Ref() + variant.Alt()[0]
+		if _, ok := psapM[vID]; ok {
+			if psapM[vID].dom != nil {
+				_ = variant.Info().Set("pdom", psapM[vID].dom)
+			}
+			if psapM[vID].rec != nil {
+				_ = variant.Info().Set("prec", psapM[vID].rec)
+			}
+			if psapM[vID].chet != nil {
+				_ = variant.Info().Set("pchet", psapM[vID].chet)
+			}
+		}
+		wrt.WriteVariant(variant)
+	}
+	return subcommands.ExitSuccess
+}
+
+/*
+type rpsap struct {
+}
+
+func (*rpsap) Name() string { return "rpsap" }
+func (*rpsap) Synopsis() string {
+	return "refine psap scores for specific variant types"
+}
+func (*rpsap) Usage() string {
+	return `rpsap`
+}
+
+func (r *rpsap) SetFlags(f *flag.FlagSet) {}
+
+func (r *repsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	rdr, err := vcfgo.NewReader(os.Stdin, false)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+	vm := map[string][]*vcfgo.Variant{} 
+	for {
+		variant := rdr.Read()
+		if variant == nil {
+			break
+		}
+		chI, _ := variant.Info().Get("slivar_comphet")
+		ch, ok := chI.(string)
+		if !ok {
+			log.Print("variant had no info field slivar_compher, has this been run through slivar's compound_het?")
+			return subcommands.ExitFailure
+		}
+
+		for _, sliID := range strings.Split(ch, ",") {
+			idSlice := strings.Split(sliID, "/")
+			chID := idSlice[0] + "-" + idSlice[1] + "-" + idSlice[2]
+
+			if _, ok := vm[chID]; ok {
+				vm[chID] = append(vm[chID], variant)
+			} else {
+				vm[chID] = []*vcfgo.Variant{variant}
+			}
+		}
+	}
+
+	var pm map[string]float64
+	for k, vs := range vm {
+		minCaddIdx := 0
+		curMinCadd := 100.1
+		for i, v := range vs {
+			caddI, _ := v.Info().Get("CADD_phred")
+			cadd, ok := caddI.(float64)
+			if !ok {
+				cadd = 0.0
+			}
+			if cadd < curMinCadd {
+				minCaddIdx = i
+				curMinCadd = cadd
+			}
+		}
+
+		psapChetI, _ := vs[minCaddIdx].Info().Get("chet")
+		psapChet, ok := caddI.(float64)
+		if !ok {
+
+		}
+	}
+}
+*/
 
 type anchor struct {
 	character string
