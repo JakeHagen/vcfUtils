@@ -555,9 +555,53 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 			if psapM[vID].chet != nil {
 				_ = variant.Info().Set("pchet", *psapM[vID].chet)
 			}
-			wrt.WriteVariant(variant)
 		}
-		//wrt.WriteVariant(variant)
+		wrt.WriteVariant(variant)
+	}
+	return subcommands.ExitSuccess
+}
+
+type coords struct {
+	label string
+}
+
+func (*coords) Name() string { return "coords" }
+func (*coords) Synopsis() string {
+	return "add coordinates of variant to info field"
+}
+func (*coords) Usage() string {
+	return `coords`
+}
+
+func (c *coords) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&c.label, "label", "", "label of coords i.e. hg19 -> hg19_pos")
+}
+
+func (c *coords) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	rdr, err := vcfgo.NewReader(os.Stdin, false)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+	rdr.AddInfoToHeader(c.label+"_chr", "1", "String", "chromosome from "+c.label)
+	rdr.AddInfoToHeader(c.label+"_pos", "1", "Integer", "position from "+c.label)
+
+	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+	for {
+		variant := rdr.Read()
+		if variant == nil {
+			break
+		}
+
+		_ = variant.Info().Set(c.label+"_chr", variant.Chromosome)
+		_ = variant.Info().Set(c.label+"_chr", variant.Pos)
+		wrt.WriteVariant(variant)
 	}
 	return subcommands.ExitSuccess
 }
