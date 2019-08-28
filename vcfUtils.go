@@ -589,7 +589,6 @@ func (c *coords) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 
 	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
 	if err != nil {
-		fmt.Println(err)
 		return subcommands.ExitFailure
 	}
 
@@ -600,7 +599,7 @@ func (c *coords) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		}
 
 		_ = variant.Info().Set(c.label+"_chr", variant.Chromosome)
-		_ = variant.Info().Set(c.label+"_chr", variant.Pos)
+		_ = variant.Info().Set(c.label+"_pos", int(variant.Pos))
 		wrt.WriteVariant(variant)
 	}
 	return subcommands.ExitSuccess
@@ -761,6 +760,7 @@ func main() {
 	subcommands.Register(&rank{}, "")
 	subcommands.Register(&anchor{}, "")
 	subcommands.Register(&ppsap{}, "")
+	subcommands.Register(&coords{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
