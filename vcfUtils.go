@@ -362,6 +362,7 @@ func groupFivePointFive(v *vcfgo.Variant) bool {
 	}
 	return false
 }
+
 /*
 func groupSix(v *vcfgo.Variant) bool {
 
@@ -417,8 +418,8 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 }
 
 type ppsap struct {
-	txt string
-	proband	string
+	txt     string
+	proband string
 }
 
 func (*ppsap) Name() string { return "ppsap" }
@@ -431,13 +432,13 @@ func (*ppsap) Usage() string {
 
 func (p *ppsap) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&p.txt, "txt", "", "txt file to extract psap values from")
-	f.StringVar(&p.txt, "proband", "", "proband name")
+	f.StringVar(&p.proband, "proband", "", "proband name")
 }
 
 type popscores struct {
-	chet	*float64
-	dom	*float64
-	rec *float64
+	chet *float64
+	dom  *float64
+	rec  *float64
 }
 
 func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
@@ -448,13 +449,14 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 
 	defer file.Close()
 
-	var psapM map[string]*popscores
+	psapM := make(map[string]*popscores)
 
 	scanner := bufio.NewScanner(file)
 
 	// find proband column
 	var modelIdx int
 	var scoreIdx int
+	scanner.Scan()
 	for idx, name := range strings.Split(scanner.Text(), "\t") {
 		switch name {
 		case "Dz.Model." + p.proband:
@@ -463,13 +465,16 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 			scoreIdx = idx
 		}
 	}
+
+	if modelIdx == 0 {
+		panic("could not find proband column using supplied proband name")
+	}
 	scanner.Scan()
 	for scanner.Scan() {
 		ls := strings.Split(scanner.Text(), "\t")
 		vID := ls[0] + "-" + ls[1] + "-" + ls[3] + "-" + ls[4]
 		pType := ls[modelIdx]
 		score := ls[scoreIdx]
-
 		if _, ok := psapM[vID]; ok {
 			switch pType {
 			case "DOM-het":
@@ -492,26 +497,28 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 				psapM[vID].chet = &chet
 			}
 		} else {
+			pops := popscores{}
 			switch pType {
 			case "DOM-het":
 				dom, err := strconv.ParseFloat(score, 64)
 				if err != nil {
 					panic(err)
 				}
-				psapM[vID] = &popscores{dom: &dom}
+				pops.dom = &dom
 			case "REC-hom":
 				rec, err := strconv.ParseFloat(score, 64)
 				if err != nil {
 					panic(err)
 				}
-				psapM[vID] = &popscores{rec: &rec}
+				pops.rec = &rec
 			case "REC-chet":
 				chet, err := strconv.ParseFloat(score, 64)
 				if err != nil {
 					panic(err)
 				}
-				psapM[vID] = &popscores{chet: &chet}
+				pops.chet = &chet
 			}
+			psapM[vID] = &pops
 		}
 	}
 
@@ -522,7 +529,7 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 	}
 
 	rdr.AddInfoToHeader("pdom", "1", "Float", "psap dominate score")
-	rdr.AddInfoToHeader("prec", "1", "Float", "psap recessive score")
+	rdr.AddInfoToHeader("phom", "1", "Float", "psap recessive score")
 	rdr.AddInfoToHeader("pchet", "1", "Float", "psap compound het score")
 
 	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
@@ -537,19 +544,20 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 			break
 		}
 
-		vID := variant.Chromosome + "-" + strconv.Itoa(int(variant.Pos)) + "-" + variant.Ref() + variant.Alt()[0]
+		vID := variant.Chromosome + "-" + strconv.Itoa(int(variant.Pos)) + "-" + variant.Ref() + "-" + variant.Alt()[0]
 		if _, ok := psapM[vID]; ok {
 			if psapM[vID].dom != nil {
-				_ = variant.Info().Set("pdom", psapM[vID].dom)
+				_ = variant.Info().Set("pdom", *psapM[vID].dom)
 			}
 			if psapM[vID].rec != nil {
-				_ = variant.Info().Set("prec", psapM[vID].rec)
+				_ = variant.Info().Set("phom", *psapM[vID].rec)
 			}
 			if psapM[vID].chet != nil {
-				_ = variant.Info().Set("pchet", psapM[vID].chet)
+				_ = variant.Info().Set("pchet", *psapM[vID].chet)
 			}
+			wrt.WriteVariant(variant)
 		}
-		wrt.WriteVariant(variant)
+		//wrt.WriteVariant(variant)
 	}
 	return subcommands.ExitSuccess
 }
@@ -575,7 +583,7 @@ func (r *repsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		return subcommands.ExitFailure
 	}
 
-	vm := map[string][]*vcfgo.Variant{} 
+	vm := map[string][]*vcfgo.Variant{}
 	for {
 		variant := rdr.Read()
 		if variant == nil {
