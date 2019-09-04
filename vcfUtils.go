@@ -301,6 +301,17 @@ func groupThree(v *vcfgo.Variant) bool {
 		xr = false
 	}
 
+	if r || xr {
+		phomI, _ := v.Info().Get("phom")
+		phom, ok := phomI.(float64)
+		if !ok {
+			phom = 1.0
+		}
+		if phom < 0.002 {
+			return true
+		}
+	}
+
 	ch := true
 	chI, _ := v.Info().Get("slivar_comphet")
 	_, ok = chI.(string)
@@ -308,21 +319,16 @@ func groupThree(v *vcfgo.Variant) bool {
 		ch = false
 	}
 
-	if r || ch || xr {
-		if isLGD(v) {
-			return true
-		}
-
+	if ch {
 		pchetI, _ := v.Info().Get("pchet")
 		pchet, ok := pchetI.(float64)
 		if !ok {
 			pchet = 1.0
 		}
 
-		if pchet <= 0.002 {
+		if pchet < 0.002 {
 			return true
 		}
-		return false
 	}
 	return false
 }
@@ -363,11 +369,61 @@ func groupFivePointFive(v *vcfgo.Variant) bool {
 	return false
 }
 
-/*
-func groupSix(v *vcfgo.Variant) bool {
 
+func groupSix(v *vcfgo.Variant) bool {
+	r := true
+	recI, _ := v.Info().Get("recessive")
+	_, ok := recI.(string)
+	if !ok {
+		r = false
+	}
+
+	xr := true
+	xrecI, _ := v.Info().Get("x_recessive")
+	_, ok = xrecI.(string)
+	if !ok {
+		xr = false
+	}
+
+	if r || xr {
+		gnomadAF := getGnomAD(v)
+		if gnomadAF < 0.01 {
+			if isDmis(v) || isSpliceDamage(v) || isLGD(v) {
+				return true
+			}
+		}
+
+		phomI, _ := v.Info().Get("phom")
+		phom, ok := phomI.(float64)
+		if !ok {
+			phom = 1.0
+		}
+		if phom < 0.05 && phom >= 0.002 {
+			return true
+		}
+	}
+
+	ch := true
+	chI, _ := v.Info().Get("slivar_comphet")
+	_, ok = chI.(string)
+	if !ok {
+		ch = false
+	}
+
+	if ch {
+		pchetI, _ := v.Info().Get("pchet")
+		pchet, ok := pchetI.(float64)
+		if !ok {
+			pchet = 1.0
+		}
+
+		if pchet < 0.05 && pchet >= 0.002 {
+			return true
+		}
+	}
+	return false
 }
-*/
+
 func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 	riskGenes := f.Args()
 
@@ -405,14 +461,17 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 			group = 4.0
 		case groupFive(variant):
 			group = 5.0
-		default:
+		case groupFivePointFive(variant):
+			group = 5.5
+		case groupSix(variant):
 			group = 6.0
 		}
 
-		variant.Info().Set("rank", group)
+		if group != 0.0 {
+			variant.Info().Set("rank", group)
+		}
 
 		wrt.WriteVariant(variant)
-
 	}
 	return subcommands.ExitSuccess
 }
@@ -561,6 +620,173 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 	return subcommands.ExitSuccess
 }
 
+type psap2vcf struct {
+	txt     string
+	proband string
+	vcf string
+}
+
+func (*psap2vcf) Name() string { return "psap2vcf" }
+func (*psap2vcf) Synopsis() string {
+	return "convert psap report txt to vcf, with popscores in info field"
+}
+func (*psap2vcf) Usage() string {
+	return `psap2vcf`
+}
+
+func (p *psap2vcf) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&p.txt, "txt", "", "txt file to extract psap values from")
+	f.StringVar(&p.proband, "proband", "", "proband name")
+	f.StringVar(&p.vcf, "vcf", "", "output vcf")
+}
+
+func (p *psap2vcf) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	file, err := os.Open(p.txt)
+	if err != nil {
+		panic(err)
+	}
+
+	defer file.Close()
+
+	psapM := make(map[string]*popscores)
+
+	scanner := bufio.NewScanner(file)
+
+	// find proband column
+	var modelIdx int
+	var scoreIdx int
+	scanner.Scan()
+	for idx, name := range strings.Split(scanner.Text(), "\t") {
+		switch name {
+		case "Dz.Model." + p.proband:
+			modelIdx = idx
+		case "popScore." + p.proband:
+			scoreIdx = idx
+		}
+	}
+
+	if modelIdx == 0 {
+		panic("could not find proband column using supplied proband name")
+	}
+	scanner.Scan()
+	for scanner.Scan() {
+		ls := strings.Split(scanner.Text(), "\t")
+		vID := ls[0] + "-" + ls[1] + "-" + ls[3] + "-" + ls[4]
+		pType := ls[modelIdx]
+		score := ls[scoreIdx]
+		if _, ok := psapM[vID]; ok {
+			switch pType {
+			case "DOM-het":
+				dom, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].dom = &dom
+			case "REC-hom":
+				rec, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].rec = &rec
+			case "REC-chet":
+				chet, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				psapM[vID].chet = &chet
+			}
+		} else {
+			pops := popscores{}
+			switch pType {
+			case "DOM-het":
+				dom, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				pops.dom = &dom
+			case "REC-hom":
+				rec, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				pops.rec = &rec
+			case "REC-chet":
+				chet, err := strconv.ParseFloat(score, 64)
+				if err != nil {
+					panic(err)
+				}
+				pops.chet = &chet
+			}
+			psapM[vID] = &pops
+		}
+	}
+
+	hdr := vcfgo.NewHeader()
+	hdr.FileFormat = "4.2"
+
+	hdr.Infos["pdom"] = &vcfgo.Info{
+		Id:          "pdom",
+		Description: "psap dominate score",
+		Number:      "1",
+		Type:        "Float",
+	}
+	hdr.Infos["phom"] = &vcfgo.Info{
+		Id:          "phom",
+		Description: "psap homo score",
+		Number:      "1",
+		Type:        "Float",
+	}
+	hdr.Infos["pchet"] = &vcfgo.Info{
+		Id:          "pchet",
+		Description: "psap compound het score",
+		Number:      "1",
+		Type:        "Float",
+	}
+
+	wrt, err := vcfgo.NewWriter(os.Stdout, hdr)
+	if err != nil {
+		fmt.Println(err)
+		return subcommands.ExitFailure
+	}
+
+
+	for k, v := range psapM {
+		vID := strings.Split(k, "-")
+		chrom := vID[0]
+		pos, err := strconv.Atoi(vID[1])
+		if err != nil {
+			panic(err)
+		}
+		ref := vID[2]
+		alt := vID[3]
+
+		var variant *vcfgo.Variant
+
+		variant = &vcfgo.Variant{
+			Chromosome: chrom,
+			Pos:        uint64(pos),
+			Id_:        ".",
+			Reference:  ref,
+			Alternate:  []string{alt},
+			Header: hdr,
+			Filter: ".",
+			Info_: vcfgo.NewInfoByte([]byte{}, hdr),
+		}
+
+		if v.dom != nil {
+			_ = variant.Info().Set("pdom", *v.dom)
+		}
+		if v.rec != nil {
+			_ = variant.Info().Set("phom", *v.rec)
+		}
+		if v.chet != nil {
+			_ = variant.Info().Set("pchet", *v.chet)
+		}
+		wrt.WriteVariant(variant)
+	}
+	return subcommands.ExitSuccess
+}
+
 type coords struct {
 	label string
 }
@@ -604,77 +830,6 @@ func (c *coords) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	}
 	return subcommands.ExitSuccess
 }
-
-/*
-type rpsap struct {
-}
-
-func (*rpsap) Name() string { return "rpsap" }
-func (*rpsap) Synopsis() string {
-	return "refine psap scores for specific variant types"
-}
-func (*rpsap) Usage() string {
-	return `rpsap`
-}
-
-func (r *rpsap) SetFlags(f *flag.FlagSet) {}
-
-func (r *repsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	rdr, err := vcfgo.NewReader(os.Stdin, false)
-	if err != nil {
-		fmt.Println(err)
-		return subcommands.ExitFailure
-	}
-
-	vm := map[string][]*vcfgo.Variant{}
-	for {
-		variant := rdr.Read()
-		if variant == nil {
-			break
-		}
-		chI, _ := variant.Info().Get("slivar_comphet")
-		ch, ok := chI.(string)
-		if !ok {
-			log.Print("variant had no info field slivar_compher, has this been run through slivar's compound_het?")
-			return subcommands.ExitFailure
-		}
-
-		for _, sliID := range strings.Split(ch, ",") {
-			idSlice := strings.Split(sliID, "/")
-			chID := idSlice[0] + "-" + idSlice[1] + "-" + idSlice[2]
-
-			if _, ok := vm[chID]; ok {
-				vm[chID] = append(vm[chID], variant)
-			} else {
-				vm[chID] = []*vcfgo.Variant{variant}
-			}
-		}
-	}
-
-	var pm map[string]float64
-	for k, vs := range vm {
-		minCaddIdx := 0
-		curMinCadd := 100.1
-		for i, v := range vs {
-			caddI, _ := v.Info().Get("CADD_phred")
-			cadd, ok := caddI.(float64)
-			if !ok {
-				cadd = 0.0
-			}
-			if cadd < curMinCadd {
-				minCaddIdx = i
-				curMinCadd = cadd
-			}
-		}
-
-		psapChetI, _ := vs[minCaddIdx].Info().Get("chet")
-		psapChet, ok := caddI.(float64)
-		if !ok {
-
-		}
-	}
-}
-*/
 
 type anchor struct {
 	character string
@@ -760,6 +915,7 @@ func main() {
 	subcommands.Register(&rank{}, "")
 	subcommands.Register(&anchor{}, "")
 	subcommands.Register(&ppsap{}, "")
+	subcommands.Register(&psap2vcf{}, "")
 	subcommands.Register(&coords{}, "")
 
 	flag.Parse()
