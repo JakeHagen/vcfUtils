@@ -213,23 +213,23 @@ func isRare(v *vcfgo.Variant) bool {
 }
 
 func isSpliceDamage(v *vcfgo.Variant) bool {
-	impactI, _ := v.Info().Get("vep_IMPACT")
-	impact, ok := impactI.(string)
+	//impactI, _ := v.Info().Get("vep_IMPACT")
+	//impact, ok := impactI.(string)
+	//if !ok {
+	//	impact = "."
+	//}
+
+	//if impact == "MODIFIER" || impact == "LOW" {
+	maxI, _ := v.Info().Get("spliceAI_max")
+	max, ok := maxI.(float64)
 	if !ok {
-		impact = "."
+		max = 0.0
 	}
 
-	if impact == "MODIFIER" || impact == "LOW" {
-		maxI, _ := v.Info().Get("spliceAI_max")
-		max, ok := maxI.(float64)
-		if !ok {
-			max = 0.0
-		}
-
-		if max >= 0.5 {
-			return true
-		}
+	if max >= 0.2 {
+		return true
 	}
+	//}
 	return false
 }
 
@@ -289,15 +289,13 @@ func groupThree(v *vcfgo.Variant) bool {
 
 	r := true
 	recI, _ := v.Info().Get("recessive")
-	_, ok = recI.(string)
-	if !ok {
+	if recI == nil {
 		r = false
 	}
 
 	xr := true
 	xrecI, _ := v.Info().Get("x_recessive")
-	_, ok = xrecI.(string)
-	if !ok {
+	if xrecI == nil {
 		xr = false
 	}
 
@@ -312,29 +310,11 @@ func groupThree(v *vcfgo.Variant) bool {
 		}
 	}
 
-	ch := true
-	chI, _ := v.Info().Get("slivar_comphet")
-	_, ok = chI.(string)
-	if !ok {
-		ch = false
-	}
-
-	if ch {
-		pchetI, _ := v.Info().Get("pchet")
-		pchet, ok := pchetI.(float64)
-		if !ok {
-			pchet = 1.0
-		}
-
-		if pchet < 0.002 {
-			return true
-		}
-	}
 	return false
 }
 
 func groupFour(v *vcfgo.Variant) bool {
-	if isDmis(v) || isLGD(v) {
+	if isDmis(v) || isLGD(v) || isSpliceDamage(v) {
 		if isRare(v) {
 			return true
 		}
@@ -349,7 +329,7 @@ func groupFive(v *vcfgo.Variant) bool {
 		csq = "."
 	}
 
-	if isLGD(v) || csq == "missense" {
+	if isLGD(v) || csq == "missense_variant" || isSpliceDamage(v) {
 		gnomadAF := getGnomAD(v)
 
 		if gnomadAF <= 0.001 && gnomadAF >= 0.0001 {
@@ -373,15 +353,13 @@ func groupFivePointFive(v *vcfgo.Variant) bool {
 func groupSix(v *vcfgo.Variant) bool {
 	r := true
 	recI, _ := v.Info().Get("recessive")
-	_, ok := recI.(string)
-	if !ok {
+	if recI == nil {
 		r = false
 	}
 
 	xr := true
 	xrecI, _ := v.Info().Get("x_recessive")
-	_, ok = xrecI.(string)
-	if !ok {
+	if xrecI == nil {
 		xr = false
 	}
 
@@ -403,14 +381,29 @@ func groupSix(v *vcfgo.Variant) bool {
 		}
 	}
 
-	ch := true
+	return false
+}
+
+func groupThreeCompHet(v *vcfgo.Variant) bool {
 	chI, _ := v.Info().Get("slivar_comphet")
-	_, ok = chI.(string)
-	if !ok {
-		ch = false
+	if chI != nil {
+		pchetI, _ := v.Info().Get("pchet")
+		pchet, ok := pchetI.(float64)
+		if !ok {
+			pchet = 1.0
+		}
+
+		if pchet < 0.002 {
+			return true
+		}
 	}
 
-	if ch {
+	return false
+}
+
+func groupSixCompHet(v *vcfgo.Variant) bool {
+	chI, _ := v.Info().Get("slivar_comphet")
+	if chI != nil {
 		pchetI, _ := v.Info().Get("pchet")
 		pchet, ok := pchetI.(float64)
 		if !ok {
@@ -420,7 +413,16 @@ func groupSix(v *vcfgo.Variant) bool {
 		if pchet < 0.05 && pchet >= 0.002 {
 			return true
 		}
+
+
+		gnomadAF := getGnomAD(v)
+		if gnomadAF < 0.01 {
+			if isDmis(v) || isSpliceDamage(v) || isLGD(v) {
+				return true
+			}
+		}
 	}
+
 	return false
 }
 
@@ -434,6 +436,7 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 	}
 
 	rdr.AddInfoToHeader("rank", "1", "Float", "variant classifications")
+	rdr.AddInfoToHeader("comphet_rank", "1", "Float", "variant classifications for half of compound het")
 
 	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
 	if err != nil {
@@ -447,28 +450,40 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 			break
 		}
 
-		var group float64
+		var rank float64
 		switch {
 		case groupOne(variant, riskGenes):
-			group = 1.0
+			rank = 1.0
 		case groupTwo(variant):
-			group = 2.0
+			rank = 2.0
 		case groupTwoPointFive(variant):
-			group = 2.5
+			rank = 2.5
 		case groupThree(variant):
-			group = 3.0
+			rank = 3.0
 		case groupFour(variant):
-			group = 4.0
+			rank = 4.0
 		case groupFive(variant):
-			group = 5.0
+			rank = 5.0
 		case groupFivePointFive(variant):
-			group = 5.5
+			rank = 5.5
 		case groupSix(variant):
-			group = 6.0
+			rank = 6.0
 		}
 
-		if group != 0.0 {
-			variant.Info().Set("rank", group)
+		if rank != 0.0 {
+			variant.Info().Set("rank", rank)
+		}
+
+		var rankCompHet float64
+		switch {
+		case groupThreeCompHet(variant):
+			rankCompHet = 3.0
+		case groupSixCompHet(variant):
+			rankCompHet = 6.0
+		}
+
+		if rankCompHet != 0.0 {
+			variant.Info().Set("comphet_rank", rankCompHet)
 		}
 
 		wrt.WriteVariant(variant)
@@ -476,110 +491,23 @@ func (r *rank) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) sub
 	return subcommands.ExitSuccess
 }
 
-type ppsap struct {
-	txt     string
-	proband string
+func getVarID(v *vcfgo.Variant) string {
+	return v.Chromosome + "-" + strconv.Itoa(int(v.Pos)) + "-" + v.Reference + "-" + v.Alternate[0]
 }
 
-func (*ppsap) Name() string { return "ppsap" }
-func (*ppsap) Synopsis() string {
-	return "parse psap output and add it to vcf"
-}
-func (*ppsap) Usage() string {
-	return `ppsap`
-}
+type filterCompHet struct {}
 
-func (p *ppsap) SetFlags(f *flag.FlagSet) {
-	f.StringVar(&p.txt, "txt", "", "txt file to extract psap values from")
-	f.StringVar(&p.proband, "proband", "", "proband name")
+func (*filterCompHet) Name() string { return "filterCompHet" }
+func (*filterCompHet) Synopsis() string {
+	return "remove compound het pairs that dont both have ranks"
+}
+func (*filterCompHet) Usage() string {
+	return `filterCompHet`
 }
 
-type popscores struct {
-	chet *float64
-	dom  *float64
-	rec  *float64
-}
+func (fch *filterCompHet) SetFlags(f *flag.FlagSet) {}
 
-func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
-	file, err := os.Open(p.txt)
-	if err != nil {
-		panic(err)
-	}
-
-	defer file.Close()
-
-	psapM := make(map[string]*popscores)
-
-	scanner := bufio.NewScanner(file)
-
-	// find proband column
-	var modelIdx int
-	var scoreIdx int
-	scanner.Scan()
-	for idx, name := range strings.Split(scanner.Text(), "\t") {
-		switch name {
-		case "Dz.Model." + p.proband:
-			modelIdx = idx
-		case "popScore." + p.proband:
-			scoreIdx = idx
-		}
-	}
-
-	if modelIdx == 0 {
-		panic("could not find proband column using supplied proband name")
-	}
-	scanner.Scan()
-	for scanner.Scan() {
-		ls := strings.Split(scanner.Text(), "\t")
-		vID := ls[0] + "-" + ls[1] + "-" + ls[3] + "-" + ls[4]
-		pType := ls[modelIdx]
-		score := ls[scoreIdx]
-		if _, ok := psapM[vID]; ok {
-			switch pType {
-			case "DOM-het":
-				dom, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				psapM[vID].dom = &dom
-			case "REC-hom":
-				rec, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				psapM[vID].rec = &rec
-			case "REC-chet":
-				chet, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				psapM[vID].chet = &chet
-			}
-		} else {
-			pops := popscores{}
-			switch pType {
-			case "DOM-het":
-				dom, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				pops.dom = &dom
-			case "REC-hom":
-				rec, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				pops.rec = &rec
-			case "REC-chet":
-				chet, err := strconv.ParseFloat(score, 64)
-				if err != nil {
-					panic(err)
-				}
-				pops.chet = &chet
-			}
-			psapM[vID] = &pops
-		}
-	}
+func (fch *filterCompHet) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
 
 	rdr, err := vcfgo.NewReader(os.Stdin, false)
 	if err != nil {
@@ -587,37 +515,114 @@ func (p *ppsap) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) su
 		return subcommands.ExitFailure
 	}
 
-	rdr.AddInfoToHeader("pdom", "1", "Float", "psap dominate score")
-	rdr.AddInfoToHeader("phom", "1", "Float", "psap recessive score")
-	rdr.AddInfoToHeader("pchet", "1", "Float", "psap compound het score")
-
 	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
 	if err != nil {
 		fmt.Println(err)
 		return subcommands.ExitFailure
 	}
 
+	type compHetVariant struct {
+		variant *vcfgo.Variant
+		slivarStr string
+	}
+
+	type compHetPair struct {
+		ch1 compHetVariant
+		ch2 compHetVariant
+		paired bool
+	}
+
+	compHetMap := map[string]compHetPair{}
 	for {
 		variant := rdr.Read()
 		if variant == nil {
 			break
 		}
 
-		vID := variant.Chromosome + "-" + strconv.Itoa(int(variant.Pos)) + "-" + variant.Ref() + "-" + variant.Alt()[0]
-		if _, ok := psapM[vID]; ok {
-			if psapM[vID].dom != nil {
-				_ = variant.Info().Set("pdom", *psapM[vID].dom)
+		_, err := variant.Info().Get("comphet_rank")
+		if err == nil {
+			chI, err := variant.Info().Get("slivar_comphet")
+			if err != nil {
+				panic("should be a slivar compound het vcf, i.e. all variants should have info field 'slivar_comphet'")
 			}
-			if psapM[vID].rec != nil {
-				_ = variant.Info().Set("phom", *psapM[vID].rec)
-			}
-			if psapM[vID].chet != nil {
-				_ = variant.Info().Set("pchet", *psapM[vID].chet)
+			if chString, ok := chI.(string); ok {
+				variant.Info().Set("slivar_comphet", chString)
+				chId := strings.Split(chString, "/")[2]
+				if pair, ok := compHetMap[chId]; ok {
+					pair.ch2 = compHetVariant{
+						variant:   variant,
+						slivarStr: chString,
+					}
+					pair.paired = true
+					compHetMap[chId] = pair
+				} else {
+					compHetMap[chId] = compHetPair{
+						ch1: compHetVariant{
+							variant: variant,
+							slivarStr: chString,
+						},
+						paired:   false,
+					}
+				}
+			} else {
+				if chSlice, ok := chI.([]string); ok {
+					for _, chString := range chSlice {
+						chId := strings.Split(chString, "/")[2]
+						if pair, ok := compHetMap[chId]; ok {
+							pair.ch2 = compHetVariant{
+								variant:   variant,
+								slivarStr: chString,
+							}
+							pair.paired = true
+							compHetMap[chId] = pair
+						} else {
+							compHetMap[chId] = compHetPair{
+								ch1: compHetVariant{
+									variant: variant,
+									slivarStr: chString,
+								},
+								paired:   false,
+							}
+						}
+					}
+				}
 			}
 		}
-		wrt.WriteVariant(variant)
 	}
+
+	toWrite := map[string]*vcfgo.Variant{}
+	for _, p := range compHetMap {
+		if p.paired {
+			v1Id := getVarID(p.ch1.variant)
+			v2Id := getVarID(p.ch2.variant)
+			if _, ok := toWrite[v1Id]; ok {
+				oCHS, _ := toWrite[v1Id].Info().Get("slivar_comphet")
+				toWrite[v1Id].Info().Set("slivar_comphet", oCHS.(string) + "," + p.ch1.slivarStr)
+			} else {
+				p.ch1.variant.Info().Set("slivar_comphet", p.ch1.slivarStr)
+				toWrite[v1Id] = p.ch1.variant
+			}
+			if _, ok := toWrite[v2Id]; ok {
+				oCHS, _ := toWrite[v2Id].Info().Get("slivar_comphet")
+				toWrite[v2Id].Info().Set("slivar_comphet", oCHS.(string) + "," + p.ch2.slivarStr)
+			} else {
+				p.ch2.variant.Info().Set("slivar_comphet", p.ch2.slivarStr)
+				toWrite[v2Id] = p.ch2.variant
+			}
+		}
+	}
+
+	for _, v := range toWrite {
+		wrt.WriteVariant(v)
+	}
+
 	return subcommands.ExitSuccess
+}
+
+type popscores struct {
+	chet *float64
+	dom  *float64
+	rec  *float64
 }
 
 type psap2vcf struct {
@@ -668,10 +673,11 @@ func (p *psap2vcf) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{})
 	if modelIdx == 0 {
 		panic("could not find proband column using supplied proband name")
 	}
-	scanner.Scan()
+
 	for scanner.Scan() {
 		ls := strings.Split(scanner.Text(), "\t")
 		vID := ls[0] + "-" + ls[1] + "-" + ls[3] + "-" + ls[4]
+
 		pType := ls[modelIdx]
 		score := ls[scoreIdx]
 		if _, ok := psapM[vID]; ok {
@@ -914,9 +920,9 @@ func main() {
 	subcommands.Register(&manipInfo{}, "")
 	subcommands.Register(&rank{}, "")
 	subcommands.Register(&anchor{}, "")
-	subcommands.Register(&ppsap{}, "")
 	subcommands.Register(&psap2vcf{}, "")
 	subcommands.Register(&coords{}, "")
+	subcommands.Register(&filterCompHet{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
