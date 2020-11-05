@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -346,6 +347,11 @@ func groupFivePointFive(v *vcfgo.Variant) bool {
 	if ok {
 		return true
 	}
+	hqdnvI, _ := v.Info().Get("hq_denovo")
+	_, ok = hqdnvI.(string)
+	if ok {
+		return true
+	}
 	return false
 }
 
@@ -546,7 +552,6 @@ func (fch *filterCompHet) Execute(_ context.Context, f *flag.FlagSet, _ ...inter
 				panic("should be a slivar compound het vcf, i.e. all variants should have info field 'slivar_comphet'")
 			}
 			if chString, ok := chI.(string); ok {
-				variant.Info().Set("slivar_comphet", chString)
 				chId := strings.Split(chString, "/")[2]
 				if pair, ok := compHetMap[chId]; ok {
 					pair.ch2 = compHetVariant{
@@ -913,6 +918,381 @@ func (a *anchor) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	return subcommands.ExitSuccess
 }
 
+type mkVcf struct {
+	//variants string
+	//pedigree string
+}
+
+func (*mkVcf) Name() string { return "mkVcf" }
+func (*mkVcf) Synopsis() string {
+	return "take variants in the format 1-3453452-G-A-sampleId with optional pedigree file and outputs vcf"
+}
+func (*mkVcf) Usage() string {
+	return `mkVcf -variants /path/to/variants.txt -pedigree /path/to/pedigree.ped`
+}
+
+func (v *mkVcf) SetFlags(f *flag.FlagSet) {
+	//f.StringVar(&v.variants, "variants", "", "list of variants to convert")
+	//f.StringVar(&v.pedigree, "pedigree", "", "pedigree file")
+}
+
+func (v *mkVcf) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	hdr := vcfgo.NewHeader()
+	hdr.FileFormat = "4.2"
+
+	hdr.Infos["sample"] = &vcfgo.Info{
+		Id:          "sample",
+		Description: "samples",
+		Number:      ".",
+		Type:        "String",
+	}
+
+	wrt, err := vcfgo.NewWriter(os.Stdout, hdr)
+	if err != nil {
+		panic(err)
+	}
+
+	//type sv struct {
+	//	chromosome string
+	//	position int
+	//	reference string
+	//	alternate string
+	//	sample string
+	//}
+
+	//var vl []sv
+
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		if strings.Contains(scanner.Text(), "#") {
+			continue
+		}
+
+		ll := strings.Split(scanner.Text(), "-")
+		chrom := ll[0]
+		pos, err := strconv.Atoi(ll[1])
+		if err != nil {
+			log.Fatal("could not convert position string to int, something is wrong with format")
+		}
+		ref := ll[2]
+		alt := ll[3]
+		sample := ll[4]
+
+		//cv := sv{
+		//	chromosome: chrom,
+		//	position:   pos,
+		//	reference:  ref,
+		//	alternate:  alt,
+		//	sample:     sample,
+		//}
+
+		//vl = append(vl, cv)
+
+		var variant *vcfgo.Variant
+		variant = &vcfgo.Variant{
+			Chromosome: chrom,
+			Pos:        uint64(pos),
+			Id_:        ".",
+			Reference:  ref,
+			Alternate:  []string{alt},
+			Header:     hdr,
+			Filter:     ".",
+			Info_:      vcfgo.NewInfoByte([]byte{}, hdr),
+		}
+		_ = variant.Info().Set("sample", sample)
+		wrt.WriteVariant(variant)
+	}
+	return subcommands.ExitSuccess
+}
+
+func mkCSQ(keys, vals []string) map[string]string {
+	csq := map[string]string{}
+	for i, k := range keys {
+		csq[k] = vals[i]
+	}
+	return csq
+}
+
+func getCanon(csq []map[string]string) []map[string]string {
+	rcsq := make([]map[string]string, 0)
+	for _, c := range csq {
+		if c["CANONICAL"] == "YES" {
+			rcsq = append(rcsq, c)
+		}
+	}
+
+	return rcsq
+}
+
+func getAppris(csq []map[string]string) []map[string]string {
+	m := map[string]int{
+		"P1": 7,
+		"P2": 6,
+		"P3": 5,
+		"P4": 4,
+		"P5": 3,
+		"ALT1": 2,
+		"ALT2": 1,
+	}
+
+	max := 0
+	rcsq := make([]map[string]string, 0)
+	for _, c := range csq {
+		query := c["APPRIS"]
+		if m[query] > max {
+			rcsq = []map[string]string{c}
+			max = m[query]
+		}
+		if m[query] == max {
+			rcsq = append(rcsq, c)
+		}
+	}
+	return rcsq
+}
+
+func getTSL(csq []map[string]string) []map[string]string {
+	m := map[string]int{
+		"1": 6,
+		"2": 5,
+		"3": 4,
+		"4": 3,
+		"5": 2,
+		"NA": 1,
+	}
+
+	max := 0
+	rcsq := make([]map[string]string, 0)
+	for _, c := range csq {
+		query := c["APPRIS"]
+		if m[query] > max {
+			rcsq = []map[string]string{c}
+			max = m[query]
+		}
+		if m[query] == max {
+			rcsq = append(rcsq, c)
+		}
+	}
+	return rcsq
+}
+
+func getBiotype(csq []map[string]string) []map[string]string {
+	rcsq := make([]map[string]string, 0)
+	for _, c := range csq {
+		if c["BIOTYPE"] == "protein_coding" {
+			rcsq = append(rcsq, c)
+		}
+	}
+
+	return rcsq
+}
+
+func getSevere(csq []map[string]string) []map[string]string {
+	m := map[string]int{
+		"transcript_ablation":                36,
+		"splice_acceptor_variant":            35,
+		"splice_donor_variant":               34,
+		"stop_gained":                        33,
+		"frameshift_variant":                 32,
+		"stop_lost":                          31,
+		"start_lost":                         30,
+		"transcript_amplification":           29,
+		"inframe_insertion":                  28,
+		"inframe_deletion":                   27,
+		"missense_variant":                   26,
+		"protein_altering_variant":           25,
+		"splice_region_variant":              24,
+		"incomplete_terminal_codon_variant":  23,
+		"start_retained_variant":             22,
+		"stop_retained_variant":              21,
+		"synonymous_variant":                 20,
+		"coding_sequence_variant":            19,
+		"mature_miRNA_variant":               18,
+		"5_prime_UTR_variant":                17,
+		"3_prime_UTR_variant":                16,
+		"non_coding_transcript_exon_variant": 15,
+		"intron_variant":                     14,
+		"NMD_transcript_variant":             13,
+		"non_coding_transcript_variant":      12,
+		"upstream_gene_variant":              11,
+		"downstream_gene_variant":            10,
+		"TFBS_ablation":                      9,
+		"TFBS_amplification":                 8,
+		"TF_binding_site_variant":            7,
+		"regulatory_region_ablation":         6,
+		"regulatory_region_amplification":    5,
+		"feature_elongation":                 4,
+		"regulatory_region_variant":          3,
+		"feature_truncation":                 2,
+		"intergenic_variant":                 1,
+	}
+
+	max := 0
+	rcsq := make([]map[string]string, 0)
+	for _, c := range csq {
+		query := strings.Split(c["Consequence"], "&")[0] //split multiple consequences, VEP always put most severe first
+		if m[query] > max {
+			rcsq = []map[string]string{c}
+			max = m[query]
+		}
+		if m[query] == max {
+			rcsq = append(rcsq, c)
+		}
+	}
+	return rcsq
+}
+
+func rankCanon(csq []map[string]string) map[string]string {
+	canons := getCanon(csq)
+	if len(canons) == 1 {
+		return canons[0]
+	}
+	if len(canons) == 0 {
+		canons = csq
+	}
+
+	apps := getAppris(canons)
+	if len(apps) == 1 {
+		return apps[0]
+	}
+
+	tsl := getTSL(apps)
+	if len(tsl) == 1 {
+		return tsl[0]
+	}
+
+	biotype := getBiotype(tsl)
+	if len(biotype) == 1 {
+		return tsl[0]
+	}
+	if len(biotype) == 0 {
+		biotype = tsl
+	}
+
+	severe := getSevere(biotype)
+	return severe[0]
+}
+
+func rankSevere(csq []map[string]string) map[string]string {
+	severe := getSevere(csq)
+	if len(severe) == 1 {
+		return severe[0]
+	}
+
+	canons := getCanon(severe)
+	if len(canons) == 1 {
+		return canons[0]
+	}
+	if len(canons) == 0 {
+		canons = severe
+	}
+
+	apps := getAppris(canons)
+	if len(apps) == 1 {
+		return apps[0]
+	}
+
+	tsl := getTSL(apps)
+	if len(tsl) == 1 {
+		return tsl[0]
+	}
+
+	biotype := getBiotype(tsl)
+	if len(biotype) >= 1 {
+		return biotype[0]
+	}
+	return tsl[0]
+}
+
+type pullCSQ struct {
+	extract string
+}
+
+func (*pullCSQ) Name() string { return "pullCSQ" }
+func (*pullCSQ) Synopsis() string {
+	return ""
+}
+func (*pullCSQ) Usage() string {
+	return `pullCSQ -extract csqField1,csqField2`
+}
+
+func (p *pullCSQ) SetFlags(f *flag.FlagSet) {
+	f.StringVar(&p.extract, "extract", "", "comma sep csq fields to extract")
+}
+
+func (p *pullCSQ) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) subcommands.ExitStatus {
+	// create VCF read, only read from stdin currently
+	rdr, err := vcfgo.NewReader(os.Stdin, false)
+	if err != nil {
+		panic(err)
+	}
+
+	// parse fields from argument into array of fields to extract from csq
+	extractFields := strings.Split(p.extract, ",")
+	for _, f := range extractFields {
+		rdr.AddInfoToHeader(f, "1", "String", "extracted from CSQ")
+	}
+
+	for _, f := range extractFields {
+		rdr.AddInfoToHeader("canonical_" + f, "1", "String", "canonical " + f + " pulled from csq")
+		rdr.AddInfoToHeader(f, "1", "String", "most severe " + f + " pulled from csq")
+	}
+
+	// create writer
+	wrt, err := vcfgo.NewWriter(os.Stdout, rdr.Header)
+	if err != nil {
+		panic(err)
+	}
+
+	// get the csq key from the vcf header
+	var csqInfo string
+	if csqH, ok := rdr.Header.Infos["CSQ"]; ok {
+		csqInfo = csqH.Description
+	} else {
+		log.Fatal("no CSQ field, please annotate with VEP")
+	}
+	csqKeys := strings.Split(strings.Split(csqInfo, "Format: ")[1], "|")
+
+
+	for {
+		variant := rdr.Read()
+		if variant == nil {
+			break
+		}
+		csq, err := variant.Info().Get("CSQ")
+		if err != nil {
+			wrt.WriteVariant(variant)
+			continue
+		}
+
+		var scsq map[string]string
+		var ccsq map[string]string
+
+		switch csq := csq.(type) {
+		case []string:
+			acsq :=make([]map[string]string, 0)
+			for _, c := range csq {
+				acsq = append(acsq, mkCSQ(csqKeys, strings.Split(c, "|")))
+			}
+			scsq = rankSevere(acsq)
+			ccsq = rankCanon(acsq)
+		case string:
+			scsq = mkCSQ(csqKeys, strings.Split(csq, "|"))
+			ccsq = mkCSQ(csqKeys, strings.Split(csq, "|"))
+		}
+
+		for _, f := range extractFields {
+			if ccsq[f] != "" {
+				_ = variant.Info().Set("canonical_"+f, ccsq[f])
+			}
+			if scsq[f] != "" {
+				_ = variant.Info().Set(f, scsq[f])
+			}
+		}
+		wrt.WriteVariant(variant)
+	}
+	return subcommands.ExitSuccess
+}
+
 func main() {
 	subcommands.Register(subcommands.HelpCommand(), "")
 	subcommands.Register(subcommands.FlagsCommand(), "")
@@ -923,6 +1303,8 @@ func main() {
 	subcommands.Register(&psap2vcf{}, "")
 	subcommands.Register(&coords{}, "")
 	subcommands.Register(&filterCompHet{}, "")
+	subcommands.Register(&mkVcf{}, "")
+	subcommands.Register(&pullCSQ{}, "")
 
 	flag.Parse()
 	ctx := context.Background()
